@@ -1,95 +1,327 @@
-- Feature Name: (fill me in with a unique ident, `my_awesome_feature`)
-- Start Date: (fill me in with today's date, YYYY-MM-DD)
+- Feature Name: `macro_metavar_expr`
+- Start Date: 2021-01-23
 - RFC PR: [rust-lang/rfcs#0000](https://github.com/rust-lang/rfcs/pull/0000)
 - Rust Issue: [rust-lang/rust#0000](https://github.com/rust-lang/rust/issues/0000)
 
 # Summary
 [summary]: #summary
 
-One paragraph explanation of the feature.
+Add new syntax to declarative macros to give their authors easy access to
+additional metadata about macro metavariables, such as the index, length, or
+count of macro repetitions.
 
 # Motivation
 [motivation]: #motivation
 
-Why are we doing this? What use cases does it support? What is the expected outcome?
+Macros with repetitions often expand to code that needs to know or could
+benefit from knowing how many repetitions there are, or which repetition is
+currently being expanded.  Consider one of the commonly used example macros to
+create a vector, recreating the `vec!` macro from the standard library:
+
+```
+macro_rules! myvec {
+    ($($value:expr),* $(,)?) => {
+        {
+            let mut v = Vec::new();
+            $(
+                v.push($value);
+            )*
+            v
+        }
+    };
+}
+```
+
+This would be more efficient if it could use `Vec::with_capacity` to
+preallocate the vector with the correct length.  However, there is no standard
+facility in declarative macros to achieve this, as there is no way to obtain
+the *number* of repetitions of `$value`.
 
 # Guide-level explanation
 [guide-level-explanation]: #guide-level-explanation
 
-Explain the proposal as if it was already included in the language and you were teaching it to another Rust programmer. That generally means:
+The [example `vec` macro defininition in the guide][guide-vec] could be made
+more efficient if it could use `Vec::with_capacity` to pre-allocate a vector
+with the correct capacity.  To do this, we need to know the number of
+repetitions.
 
-- Introducing new named concepts.
-- Explaining the feature largely in terms of examples.
-- Explaining how Rust programmers should *think* about the feature, and how it should impact the way they use Rust. It should explain the impact as concretely as possible.
-- If applicable, provide sample error messages, deprecation warnings, or migration guidance.
-- If applicable, describe the differences between teaching this to existing Rust programmers and new Rust programmers.
+[guide-vec]: https://doc.rust-lang.org/book/ch19-06-macros.html#declarative-macros-with-macro_rules-for-general-metaprogramming
 
-For implementation-oriented RFCs (e.g. for compiler internals), this section should focus on how compiler contributors should think about the change, and give examples of its concrete impact. For policy RFCs, this section should provide an example-driven introduction to the policy, and explain its impact in concrete terms.
+Metadata about metavariables, like the number of repetitions, can be accessed
+using **metavariable expressions**.  The metavariable expression for the
+count of the number of repetitions of a metavariable `x` is `${count(x)}`, so
+we can improve the `vec` macro as follows:
+
+```
+#[macro_export]
+macro_rules! vec {
+    ( $( $x:expr ),* ) => {
+        {
+            let mut temp_vec = Vec::with_capacity(${count(x)});
+            $(
+                temp_vec.push($x);
+            )*
+            temp_vec
+        }
+    };
+}
+```
+
+The following metavariable expressions are available:
+
+| Expression                 | Meaning    |
+|----------------------------|------------|
+| `${count(ident)}`          | The number of times `ident` repeats at this repetition depth. |
+| `${count(ident, depth)}`   | The number of times `ident` repeats, including `depth` additional nested repetition depths. |
+| `${index()}`               | The index of the current inner-most repetition. |
+| `${index(depth)}`          | The index of the nested repetition at `depth` from the root. |
+| `${length()}`              | The length of the current inner-most repetition. |
+| `${length(depth)}`         | The length of the nested repetition at `depth` from the root. |
+| `${bind(ident)}`           | Binds `ident` for repetition without expanding it. |
+| `$$`                       | Expands to a single `$`, for removing ambiguity in recursive macro definitions. |
 
 # Reference-level explanation
 [reference-level-explanation]: #reference-level-explanation
 
-This is the technical portion of the RFC. Explain the design in sufficient detail that:
+Metavariable expressions in declarative macros provide expansions for
+information about metavariables that are otherwise not easily obtainable.
 
-- Its interaction with other features is clear.
-- It is reasonably clear how the feature would be implemented.
-- Corner cases are dissected by example.
+This is a backwards-compatible change as both `$$` and `${ .. }` are not
+currently accepted as valid.
 
-The section should return to the examples given in the previous section, and explain more fully how the detailed proposal makes those examples work.
+The metavariable expressions added in this RFC are concerned with declarative
+macro metavariable repetitions, and obtaining the information that the
+compiler knows about the repetitions that are being processed.
+
+## Count
+
+The `${count(x)}` metavariable expression shown in the `vec` example in the
+previous section counts the number of repetitions that will occur if the
+identifier is used in a repetition at this depth.  This means that in a macro
+expansion like:
+
+```
+    ${count(x)} $( $x )*
+```
+
+the expression `${count(x)}` will expand to the number of times the `$( $x )*`
+repetition will repeat.
+
+If repetitions are nested, then an optional depth parameter can be used to
+count within those nested repetitions.  If the depth parameter is omitted, or
+is 0, then only the top level of repetition is counted.  If it is greater
+than 0, then the number of nested repetitions that the count occurs over is
+increased by the `depth` parameter.  For example, a macro expansion like:
+
+```
+    ${count(x)} ${count(x, 1)} ${count(x, 2)} $( a $( b $( $x )* )* )*
+```
+
+The three values this expands to are the number of outer-most repetitions (the
+number of times `a` would be generated), the sum of the number of middle
+repetitions (the number of times `b` would be generated), and the total number
+of repetitions of `$x`.
+
+## Index and length
+
+Within a repetition, the `${index()}` and `${length()}` metavariable
+expressions give the index of the current repetition and the length of the
+repetition (i.e., the number of times it will repeat). The index value ranges
+from `0` to `length - 1`.
+
+For nested repetitions, by default the inner-most index and length are
+provided.  If the `depth` parameter is specified, then the index and length of
+the repetition at the given depth from the root, where 0 is the outer-most
+repetition, is provided.
+
+For example in the expression:
+
+```
+    $( a $( b $( c $x ${index()}/${length()} ${index(1)}/${length(1)} ${index(0)}/${length(0)} )* )* )*
+```
+
+the first pair of values are the index and length of the inner-most
+repetition, the second pair are the index and length of the middle
+repetition, and the third pair are the index and length of the outer-most
+repeition.
+
+
+## Bind
+
+Sometimes it is desired to repeat an expression with the arity of a
+metavariable without actually expanding the metavariable.  Sometimes it
+is possible to work around this by expanding the metavariable to an expression
+like `{ $x ; 1 }`, where the expanded value of `$x` is discarded, but this
+is only possible if what `$x` expands to is a valid expression.
+
+The `${bind(ident)}` metavariable binds `ident` for repetition as if `$ident`
+was specified, but expands to nothing.  This means a macro expansion like:
+
+```
+    $( ${bind(x)} a )*
+```
+
+will expand to `a` repeated the number of times `x` repeats.
+
+## Dollar dollar
+
+Since metavariable expressions always apply during the expansion of the macro,
+they cannot be used in nested macro definitions.  To allow nested macro
+definitions to use metavariable expressions, the `$$` expression expands to a
+single `$` token.
+
+This is also necessary for unambiguously defining repetitions in nested
+macros.  For example, this resolves [issue 35853], as the example in
+that issue can be expressed as:
+
+```
+macro_rules! foo {
+    () => {
+        macro_rules! bar {
+            ( $$( $$any:tt )* ) => { $$( $$any )* };
+        }
+    };
+}
+
+fn main() { foo!(); }
+```
+
+[issue 35853]: https://github.com/rust-lang/rust/issues/35853
+
+## Larger example
+
+For a larger example of these metavariable expressions in use, consider the
+following macro that operates over three nested repetitions:
+
+```
+macro_rules! example {
+    ( $( [ $( ( $( $x:ident )* ) )* ] )* ) => {
+        counts = (${count(x)}, ${count(x, 1)}, ${count(x, 2)})
+        nested:
+        $(
+            indexes = (${index()}/${length()})
+            counts = (${count(x)}, ${count(x, 1)})
+            nested:
+            $(
+                indexes = (${index(0)}/${length(0)}, ${index()}/${length()})
+                counts = (${count(x)})
+                nested:
+                $(
+                    indexes = (${index(0)}/${length(0)}, ${index(1)}/${length(1)}, ${index()}/${length()})
+                    ${bind(x)}
+                )*
+            )*
+        )*
+    };
+}
+```
+
+Given this input:
+```
+    example! {
+        [ ( A B C D ) ( E F G H ) ( I J ) ]
+        [ ( K L M ) ]
+    }
+```
+
+The macro would expand to:
+```
+    counts = (2, 4, 13)
+    nested:
+        indexes = (0/2)
+        counts = (3, 10)
+        nested:
+            indexes = (0/2, 0/3)
+            counts = (4)
+            nested:
+                indexes = (0/2, 0/3, 0/4)
+                indexes = (0/2, 0/3, 1/4)
+                indexes = (0/2, 0/3, 2/4)
+                indexes = (0/2, 0/3, 3/4)
+            indexes = (0/2, 1/3)
+            counts = (4)
+            nested:
+                indexes = (0/2, 1/3, 0/4)
+                indexes = (0/2, 1/3, 1/4)
+                indexes = (0/2, 1/3, 2/4)
+                indexes = (0/2, 1/3, 3/4)
+            indexes = (0/2, 2/3)
+            counts = (2)
+            nested:
+                indexes = (0/2, 2/3, 0/2)
+                indexes = (0/2, 2/3, 1/2)
+        indexes = (1/2)
+        counts = (1, 3)
+        nested:
+            indexes = (1/2, 0/1)
+            counts = (3)
+            nested:
+                indexes = (1/2, 0/1, 0/3)
+                indexes = (1/2, 0/1, 1/3)
+                indexes = (1/2, 0/1, 2/3)
+```
+
 
 # Drawbacks
 [drawbacks]: #drawbacks
 
-Why should we *not* do this?
+This adds additional syntax to the language, that program authors must learn
+and understand.  We may not want to add more syntax.
+
+The author believes it is worth the overhead of new syntax, as even though
+there exist workarounds for obtaining the information if it's really needed,
+these workarounds are sometimes difficult to discover and naive
+implementations can significantly harm compiler performance.
+
+Furthermore, the additional syntax is limited to declarative macros, and its
+use should be limited to specific circustances where it is more understandable
+than the alternatives.
 
 # Rationale and alternatives
 [rationale-and-alternatives]: #rationale-and-alternatives
 
-- Why is this design the best in the space of possible designs?
-- What other designs have been considered and what is the rationale for not choosing them?
-- What is the impact of not doing this?
+This RFC proposes a modest but powerful extension to macro syntax that makes
+it possible to obtain information that the compiler already knows, but
+requires inefficient and complex techniques to obtain in the macro.
+
+The original proposal was for a shorter syntax to provide the count of
+repetitions: `$#ident`.  During discussions of this syntax, it became clear
+that it was not obvious as to which number this referred to: the count of
+repetitions at this level, or the length of the current repetition.  It also
+does not provide a way to discover counts or lengths for other repetition
+depths.  There was also interest in being able to discover the index of the
+current repetition, and the `#` character had been used in similar proposals
+for that.  There was some reservation expressed for the use of the `#` token
+because of the cognitive burden of another sigil, and its common use in the
+`quote!` macro.
 
 # Prior art
 [prior-art]: #prior-art
 
-Discuss prior art, both the good and the bad, in relation to this proposal.
-A few examples of what this can include are:
+Declarative macros with repetition are commonly used in Rust for things that
+are implemented using variadic functions in other languages.  Usually these
+other languages provide mechanisms for finding the number of variadic
+arguments, and it is a notable limitation that Rust does not.
 
-- For language, library, cargo, tools, and compiler proposals: Does this feature exist in other programming languages and what experience have their community had?
-- For community proposals: Is this done by some other community and what were their experiences with it?
-- For other teams: What lessons can we learn from what other communities have done here?
-- Papers: Are there any published papers or great posts that discuss this? If you have some relevant papers to refer to, this can serve as a more detailed theoretical background.
-
-This section is intended to encourage you as an author to think about the lessons from other languages, provide readers of your RFC with a fuller picture.
-If there is no prior art, that is fine - your ideas are interesting to us whether they are brand new or if it is an adaptation from other languages.
-
-Note that while precedent set by other languages is some motivation, it does not on its own motivate an RFC.
-Please also take into consideration that rust sometimes intentionally diverges from common language features.
+Scripting languages, like Bash, which use `$var` for variables, often use
+similar `${...}` syntax for values based on variables: for example `${#var}`
+is used for the length of `$var`.  This means `${...}` expressions should not
+seem too weird to developers familiar with these scripting languages.
 
 # Unresolved questions
 [unresolved-questions]: #unresolved-questions
 
-- What parts of the design do you expect to resolve through the RFC process before this gets merged?
-- What parts of the design do you expect to resolve through the implementation of this feature before stabilization?
-- What related issues do you consider out of scope for this RFC that could be addressed in the future independently of the solution that comes out of this RFC?
+No unresolved questions at present.
+
+While more expressions are possible, expressions beyond those defined in this RFC are out-of-scope.
 
 # Future possibilities
 [future-possibilities]: #future-possibilities
 
-Think about what the natural extension and evolution of your proposal would
-be and how it would affect the language and project as a whole in a holistic
-way. Try to use this section as a tool to more fully consider all possible
-interactions with the project and language in your proposal.
-Also consider how the this all fits into the roadmap for the project
-and of the relevant sub-team.
+The metavariable expression syntax (`${...}`) is purposefully generic, and may
+be extended in future RFCs to anything that may be useful for the macro
+expander to produce.
 
-This is also a good place to "dump ideas", if they are out of scope for the
-RFC you are writing but otherwise related.
-
-If you have tried and cannot think of any future possibilities,
-you may simply state that you cannot think of anything.
-
-Note that having something written down in the future-possibilities section
-is not a reason to accept the current or a future RFC; such notes should be
-in the section on motivation or rationale in this or subsequent RFCs.
-The section merely provides additional information.
+The syntax `$[...]` is still invalid, and so remains available for any other
+extensions which may come in the future and don't fit in with metavariable
+expression syntax.
