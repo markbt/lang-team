@@ -71,13 +71,13 @@ The following metavariable expressions are available:
 
 | Expression                 | Meaning    |
 |----------------------------|------------|
-| `${count(ident)}`          | The number of times `ident` repeats at this repetition depth. |
-| `${count(ident, depth)}`   | The number of times `ident` repeats, including `depth` additional nested repetition depths. |
+| `${count(ident)}`          | The number of times `$ident` repeats at this repetition depth. |
+| `${count(ident, depth)}`   | The number of times `$ident` repeats, including `depth` additional nested repetition depths. |
 | `${index()}`               | The index of the current inner-most repetition. |
-| `${index(depth)}`          | The index of the nested repetition at `depth` from the root. |
+| `${index(depth)}`          | The index of the nested repetition at `depth` steps out. |
 | `${length()}`              | The length of the current inner-most repetition. |
-| `${length(depth)}`         | The length of the nested repetition at `depth` from the root. |
-| `${bind(ident)}`           | Binds `ident` for repetition without expanding it. |
+| `${length(depth)}`         | The length of the nested repetition at `depth` steps out. |
+| `${ignore(ident)}`         | Binds `$ident` for repetition, but expands to nothing. |
 | `$$`                       | Expands to a single `$`, for removing ambiguity in recursive macro definitions. |
 
 # Reference-level explanation
@@ -129,39 +129,40 @@ expressions give the index of the current repetition and the length of the
 repetition (i.e., the number of times it will repeat). The index value ranges
 from `0` to `length - 1`.
 
-For nested repetitions, by default the inner-most index and length are
-provided.  If the `depth` parameter is specified, then the index and length of
-the repetition at the given depth from the root, where 0 is the outer-most
-repetition, is provided.
+For nested repetitions, the `${index()}` and `${length()}` metavariable
+expressions expand to the inner-most index and length respectively.
+If the `depth` parameter is specified, then the metavariable expression
+expands to the index or length of the surrounding nested repetition, counting
+outwards from the inner-most repetition.  The expressions `${index()}` and
+`${index(0)}` are equivalent.
 
 For example in the expression:
 
 ```
-    $( a $( b $( c $x ${index()}/${length()} ${index(1)}/${length(1)} ${index(0)}/${length(0)} )* )* )*
+    $( a $( b $( c $x ${index()}/${length()} ${index(1)}/${length(1)} ${index(2)}/${length(2)} )* )* )*
 ```
 
 the first pair of values are the index and length of the inner-most
 repetition, the second pair are the index and length of the middle
 repetition, and the third pair are the index and length of the outer-most
-repeition.
+repetition.
 
+## Ignore
 
-## Bind
+Sometimes it is desired to repeat an expansion the same number of times as a
+metavariable repeats but without actually expanding the metavariable.  It may
+be possible to work around this by expanding the metavariable in an expression
+like `{ $x ; 1 }`, where the expanded value of `$x` is ignored, but this
+is only possible if what `$x` expands to is valid in this kind of expression.
 
-Sometimes it is desired to repeat an expression with the arity of a
-metavariable without actually expanding the metavariable.  Sometimes it
-is possible to work around this by expanding the metavariable to an expression
-like `{ $x ; 1 }`, where the expanded value of `$x` is discarded, but this
-is only possible if what `$x` expands to is a valid expression.
-
-The `${bind(ident)}` metavariable binds `ident` for repetition as if `$ident`
-was specified, but expands to nothing.  This means a macro expansion like:
+The `${ignore(ident)}` metavariable acts as if `ident` was used for the purposes
+of repetition, but expands to nothing.  This means a macro expansion like:
 
 ```
-    $( ${bind(x)} a )*
+    $( ${ignore(x)} a )*
 ```
 
-will expand to `a` repeated the number of times `x` repeats.
+will expand to a sequence of `a` tokens repeated the number of times that `x` repeats.
 
 ## Dollar dollar
 
@@ -203,12 +204,12 @@ macro_rules! example {
             counts = (${count(x)}, ${count(x, 1)})
             nested:
             $(
-                indexes = (${index(0)}/${length(0)}, ${index()}/${length()})
+                indexes = (${index(1)}/${length(1)}, ${index()}/${length()})
                 counts = (${count(x)})
                 nested:
                 $(
-                    indexes = (${index(0)}/${length(0)}, ${index(1)}/${length(1)}, ${index()}/${length()})
-                    ${bind(x)}
+                    indexes = (${index(2)}/${length(2)}, ${index(1)}/${length(1)}, ${index()}/${length()})
+                    ${ignore(x)}
                 )*
             )*
         )*
@@ -294,6 +295,11 @@ current repetition, and the `#` character had been used in similar proposals
 for that.  There was some reservation expressed for the use of the `#` token
 because of the cognitive burden of another sigil, and its common use in the
 `quote!` macro.
+
+The meaning of the `depth` parameter in `index` and `count` originally
+counted inwards from the outer-most nesting.  This was changed to count
+outwards from the inner-most nesting so that expressions can be copied
+to a different nesting depth without needing to change them.
 
 # Prior art
 [prior-art]: #prior-art
