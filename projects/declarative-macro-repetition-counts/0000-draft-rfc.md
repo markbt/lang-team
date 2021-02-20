@@ -71,11 +71,11 @@ The following metavariable expressions are available:
 
 | Expression                 | Meaning    |
 |----------------------------|------------|
-| `${count(ident)}`          | The number of times `$ident` repeats at this repetition depth. |
-| `${count(ident, depth)}`   | The number of times `$ident` repeats, including `depth` additional nested repetition depths. |
-| `${index()}`               | The index of the current inner-most repetition. |
-| `${index(depth)}`          | The index of the nested repetition at `depth` steps out. |
-| `${length()}`              | The length of the current inner-most repetition. |
+| `${count(ident)}`          | The number of times `$ident` repeats in total. |
+| `${count(ident, depth)}`   | The number of times `$ident` repeats at up to `depth` nested repetition depths. |
+| `${index()}`               | The current index of the inner-most repetition. |
+| `${index(depth)}`          | The current index of the nested repetition at `depth` steps out. |
+| `${length()}`              | The length of the inner-most repetition. |
 | `${length(depth)}`         | The length of the nested repetition at `depth` steps out. |
 | `${ignore(ident)}`         | Binds `$ident` for repetition, but expands to nothing. |
 | `$$`                       | Expands to a single `$`, for removing ambiguity in recursive macro definitions. |
@@ -108,13 +108,11 @@ the expression `${count(x)}` will expand to the number of times the `$( $x )*`
 repetition will repeat.
 
 If repetitions are nested, then an optional depth parameter can be used to
-count within those nested repetitions.  If the depth parameter is omitted, or
-is 0, then only the top level of repetition is counted.  If it is greater
-than 0, then the number of nested repetitions that the count occurs over is
-increased by the `depth` parameter.  For example, a macro expansion like:
+limit the number of nested repetitions that are counted.  For example, a macro
+expansion like:
 
 ```
-    ${count(x)} ${count(x, 1)} ${count(x, 2)} $( a $( b $( $x )* )* )*
+    ${count(x, 1)} ${count(x, 2)} ${count(x, 3)} $( a $( b $( $x )* )* )*
 ```
 
 The three values this expands to are the number of outer-most repetitions (the
@@ -167,7 +165,7 @@ will expand to a sequence of `a` tokens repeated the number of times that `x` re
 ## Dollar dollar
 
 Since metavariable expressions always apply during the expansion of the macro,
-they cannot be used in nested macro definitions.  To allow nested macro
+they cannot be used in recursive macro definitions.  To allow recursive macro
 definitions to use metavariable expressions, the `$$` expression expands to a
 single `$` token.
 
@@ -197,11 +195,11 @@ following macro that operates over three nested repetitions:
 ```
 macro_rules! example {
     ( $( [ $( ( $( $x:ident )* ) )* ] )* ) => {
-        counts = (${count(x)}, ${count(x, 1)}, ${count(x, 2)})
+        counts = (${count(x, 1)}, ${count(x, 2)}, ${count(x)})
         nested:
         $(
             indexes = (${index()}/${length()})
-            counts = (${count(x)}, ${count(x, 1)})
+            counts = (${count(x, 1)}, ${count(x)})
             nested:
             $(
                 indexes = (${index(1)}/${length(1)}, ${index()}/${length()})
